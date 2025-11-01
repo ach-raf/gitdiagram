@@ -5,12 +5,11 @@ import { useRouter } from "next/navigation";
 import { Card } from "~/components/ui/card";
 import { Input } from "~/components/ui/input";
 import { Button } from "~/components/ui/button";
-import { Sparkles } from "lucide-react";
+import { Sparkles, ChevronUp, ChevronDown, RefreshCw } from "lucide-react";
 import React from "react";
 import { CustomizationDropdown } from "./customization-dropdown";
 import { exampleRepos } from "~/lib/exampleRepos";
 import { ExportDropdown } from "./export-dropdown";
-import { ChevronUp, ChevronDown } from "lucide-react";
 import { Switch } from "~/components/ui/switch";
 
 interface MainCardProps {
@@ -20,6 +19,7 @@ interface MainCardProps {
   showCustomization?: boolean;
   onModify?: (instructions: string) => void;
   onRegenerate?: (instructions: string) => void;
+  onForceRegenerate?: () => void;
   onCopy?: () => void;
   lastGenerated?: Date;
   onExportImage?: () => void;
@@ -35,6 +35,7 @@ export default function MainCard({
   showCustomization,
   onModify,
   onRegenerate,
+  onForceRegenerate,
   onCopy,
   lastGenerated,
   onExportImage,
@@ -178,6 +179,19 @@ export default function MainCard({
                         onCheckedChange={onZoomToggle}
                       />
                     </>
+                  )}
+                  {onForceRegenerate && lastGenerated && (
+                    <button
+                      onClick={(e) => {
+                        e.preventDefault();
+                        onForceRegenerate();
+                      }}
+                      className="flex items-center gap-2 rounded-md border-[3px] border-black bg-purple-300 px-4 py-2 font-medium text-black transition-colors hover:bg-purple-400"
+                      title="Force regenerate diagram (bypass cache)"
+                    >
+                      <RefreshCw size={18} />
+                      <span>Force Regenerate</span>
+                    </button>
                   )}
                 </div>
 

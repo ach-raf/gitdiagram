@@ -189,7 +189,7 @@ flowchart TD
 EXTREMELY Important notes on syntax!!! (PAY ATTENTION TO THIS):
 - Make sure to add colour to the diagram!!! This is extremely critical.
 - In Mermaid.js syntax, we cannot include special characters for nodes without being inside quotes! For example: `EX[/api/process (Backend)]:::api` and `API -->|calls Process()| Backend` are two examples of syntax errors. They should be `EX["/api/process (Backend)"]:::api` and `API -->|"calls Process()"| Backend` respectively. Notice the quotes. This is extremely important. Make sure to include quotes for any string that contains special characters.
-- In Mermaid.js syntax, you cannot apply a class style directly within a subgraph declaration. For example: `subgraph "Frontend Layer":::frontend` is a syntax error. However, you can apply them to nodes within the subgraph. For example: `Example["Example Node"]:::frontend` is valid, and `class Example1,Example2 frontend` is valid.
+- In Mermaid.js syntax, you CANNOT apply class styles to subgraphs at all. You cannot use the `class` statement to style subgraphs. For example: `class SPA,User's Browser fill:#fff` is a SYNTAX ERROR because SPA and User's Browser are subgraph IDs. You can only apply class styles to individual nodes (not subgraphs). For example: `Example["Example Node"]:::frontend` is valid, and `class Example1,Example2 frontend` is valid (only if Example1 and Example2 are node IDs, NOT subgraph IDs). NEVER try to style subgraphs with class statements - this will cause parse errors.
 - In Mermaid.js syntax, there cannot be spaces in the relationship label names. For example: `A -->| "example relationship" | B` is a syntax error. It should be `A -->|"example relationship"| B` 
 - In Mermaid.js syntax, you cannot give subgraphs an alias like nodes. For example: `subgraph A "Layer A"` is a syntax error. It should be `subgraph "Layer A"` 
 """
@@ -209,6 +209,15 @@ You are tasked with modifying the code of a Mermaid.js diagram based on the prov
 Also, to help you modify it and simply for additional context, you will also be provided with the original explanation of the diagram enclosed in <explanation> tags in the users message. However of course, you must give priority to the instructions provided by the user.
 
 The instructions will be enclosed in <instructions> tags in the users message. If these instructions are unrelated to the task, unclear, or not possible to follow, ignore them by simply responding with: "BAD_INSTRUCTIONS"
+
+CRITICAL SYNTAX RULES:
+- You CANNOT apply class styles to subgraphs. Do NOT use class statements with subgraph IDs (like `class SPA,User's Browser ...`). This will cause parse errors. Only apply class styles to individual node IDs, never to subgraph IDs.
+- In Mermaid.js syntax, we cannot include special characters for nodes without being inside quotes. For example: `EX[/api/process (Backend)]:::api` is a syntax error. It should be `EX["/api/process (Backend)"]:::api`.
+- In Mermaid.js syntax, there cannot be spaces in relationship label names. For example: `A -->| "example relationship" | B` is a syntax error. It should be `A -->|"example relationship"| B`.
+- In Mermaid.js syntax, there cannot be spaces in the relationship label names. For example: `A -->| "example relationship" | B` is a syntax error. It should be `A -->|"example relationship"| B`
+- In Mermaid.js syntax, you cannot give subgraphs an alias like nodes. For example: `subgraph A "Layer A"` is a syntax error. It should be `subgraph "Layer A"`
+- CRITICAL: Do NOT use markdown list syntax in relationship labels. For example: `A -->|"1. Make request"| B` will cause "Unsupported markdown: list" errors. Instead use plain text like `A -->|"Make request (Step 1)"| B` but avoid starting labels with list markers like "1. ", "- ", "* ", etc. Use descriptive text without markdown formatting. 
+
 
 Your response must strictly be just the Mermaid.js code, without any additional text or explanations. Keep as many of the existing click events as possible.
 No code fence or markdown ticks needed, simply return the Mermaid.js code.

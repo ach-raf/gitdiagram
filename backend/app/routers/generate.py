@@ -2,14 +2,13 @@ from fastapi import APIRouter, Request, HTTPException
 from fastapi.responses import StreamingResponse
 from dotenv import load_dotenv
 from app.services.github_service import GitHubService
-from app.services.o4_mini_openai_service import OpenAIo4Service
+from app.services.gemini_service import GeminiService
 from app.prompts import (
     SYSTEM_FIRST_PROMPT,
     SYSTEM_SECOND_PROMPT,
     SYSTEM_THIRD_PROMPT,
     ADDITIONAL_SYSTEM_INSTRUCTIONS_PROMPT,
 )
-from anthropic._exceptions import RateLimitError
 from pydantic import BaseModel
 from functools import lru_cache
 import re
@@ -17,15 +16,27 @@ import json
 import asyncio
 
 # from app.services.claude_service import ClaudeService
+# from app.services.o4_mini_openai_service import OpenAIo4Service
 # from app.core.limiter import limiter
 
 load_dotenv()
 
-router = APIRouter(prefix="/generate", tags=["OpenAI o4-mini"])
+router = APIRouter(prefix="/generate", tags=["Google Gemini"])
 
 # Initialize services
 # claude_service = ClaudeService()
-o4_service = OpenAIo4Service()
+# o4_service = OpenAIo4Service()
+gemini_service = GeminiService()
+
+
+def map_reasoning_to_thinking_budget(reasoning_effort: str) -> int:
+    """Map reasoning_effort string to Gemini thinking_budget integer."""
+    mapping = {
+        "low": 1000,
+        "medium": 5000,
+        "high": -1,  # -1 means unlimited
+    }
+    return mapping.get(reasoning_effort, -1)
 
 
 # cache github data to avoid double API calls from cost and generate
@@ -65,8 +76,8 @@ async def get_generation_cost(request: Request, body: ApiRequest):
         # file_tree_tokens = claude_service.count_tokens(file_tree)
         # readme_tokens = claude_service.count_tokens(readme)
 
-        file_tree_tokens = o4_service.count_tokens(file_tree)
-        readme_tokens = o4_service.count_tokens(readme)
+        file_tree_tokens = gemini_service.count_tokens(file_tree)
+        readme_tokens = gemini_service.count_tokens(readme)
 
         # CLAUDE: Calculate approximate cost
         # Input cost: $3 per 1M tokens ($0.000003 per token)
@@ -75,12 +86,20 @@ async def get_generation_cost(request: Request, body: ApiRequest):
         # output_cost = 3500 * 0.000015
         # estimated_cost = input_cost + output_cost
 
+        # OPENAI o4-mini: Calculate approximate cost
         # Input cost: $1.1 per 1M tokens ($0.0000011 per token)
         # Output cost: $4.4 per 1M tokens ($0.0000044 per token)
-        input_cost = ((file_tree_tokens * 2 + readme_tokens) + 3000) * 0.0000011
-        output_cost = (
-            8000 * 0.0000044
-        )  # 8k just based on what I've seen (reasoning is expensive)
+        # input_cost = ((file_tree_tokens * 2 + readme_tokens) + 3000) * 0.0000011
+        # output_cost = (
+        #     8000 * 0.0000044
+        # )  # 8k just based on what I've seen (reasoning is expensive)
+        # estimated_cost = input_cost + output_cost
+
+        # GEMINI: Calculate approximate cost (using gemini-2.5-pro pricing)
+        # Input cost: $1.25 per 1M tokens ($0.00000125 per token)
+        # Output cost: $5.00 per 1M tokens ($0.000005 per token)
+        input_cost = ((file_tree_tokens * 2 + readme_tokens) + 3000) * 0.00000125
+        output_cost = 8000 * 0.000005  # 8k estimate for output tokens
         estimated_cost = input_cost + output_cost
 
         # Format as currency string
@@ -116,6 +135,60 @@ def process_click_events(diagram: str, username: str, repo: str, branch: str) ->
     return re.sub(click_pattern, replace_path, diagram)
 
 
+def clean_invalid_class_statements(diagram: str) -> str:
+    """
+    Remove invalid class statements that try to style subgraphs.
+    This prevents syntax errors where class statements reference subgraph IDs.
+    """
+    lines = diagram.split('\n')
+    cleaned_lines = []
+    subgraph_ids = set()
+    
+    # First pass: collect all subgraph IDs and labels
+    for line in lines:
+        line_stripped = line.strip()
+        # Match subgraph declarations with explicit ID: subgraph ID
+        subgraph_explicit_match = re.match(r'subgraph\s+([A-Za-z_][A-Za-z0-9_]*)', line_stripped)
+        if subgraph_explicit_match:
+            subgraph_ids.add(subgraph_explicit_match.group(1))
+        # Match subgraph declarations with quoted label: subgraph "Label"
+        # The label often becomes an implicit ID, especially when used in class statements
+        subgraph_label_match = re.match(r'subgraph\s+"([^"]+)"', line_stripped)
+        if subgraph_label_match:
+            label = subgraph_label_match.group(1)
+            subgraph_ids.add(label)  # Label is often used as ID
+            # Also add sanitized version (spaces removed, etc.)
+            sanitized = label.replace(' ', '').replace("'", "")
+            if sanitized:
+                subgraph_ids.add(sanitized)
+    
+    # Second pass: remove class statements that reference subgraph IDs
+    for line in lines:
+        # Check if this is a class statement
+        if line.strip().startswith('class '):
+            # Extract the IDs from the class statement
+            # Pattern: class ID1,ID2,ID3 style_name or class ID1,ID2,ID3 fill:#...
+            class_match = re.match(r'class\s+([^;:]+)', line.strip())
+            if class_match:
+                ids_string = class_match.group(1).strip()
+                # Split by comma and check each ID
+                ids = [id.strip().strip('"\'') for id in ids_string.split(',')]
+                # Check if any ID is a subgraph ID or contains spaces/special chars (likely subgraph label)
+                has_subgraph_id = any(
+                    id in subgraph_ids or 
+                    ' ' in id or 
+                    "'" in id 
+                    for id in ids
+                )
+                if has_subgraph_id:
+                    # Skip this line (don't add it to cleaned_lines)
+                    continue
+        
+        cleaned_lines.append(line)
+    
+    return '\n'.join(cleaned_lines)
+
+
 @router.post("/stream")
 async def generate_stream(request: Request, body: ApiRequest):
     try:
@@ -148,13 +221,13 @@ async def generate_stream(request: Request, body: ApiRequest):
 
                 # Token count check
                 combined_content = f"{file_tree}\n{readme}"
-                token_count = o4_service.count_tokens(combined_content)
+                token_count = gemini_service.count_tokens(combined_content)
 
-                if 50000 < token_count < 195000 and not body.api_key:
-                    yield f"data: {json.dumps({'error': f'File tree and README combined exceeds token limit (50,000). Current size: {token_count} tokens. This GitHub repository is too large for my wallet, but you can continue by providing your own OpenAI API key.'})}\n\n"
+                if 50000 < token_count < 1000000 and not body.api_key:
+                    yield f"data: {json.dumps({'error': f'File tree and README combined exceeds token limit (50,000). Current size: {token_count} tokens. This GitHub repository is too large for my wallet, but you can continue by providing your own Gemini API key.'})}\n\n"
                     return
-                elif token_count > 195000:
-                    yield f"data: {json.dumps({'error': f'Repository is too large (>195k tokens) for analysis. OpenAI o4-mini\'s max context length is 200k tokens. Current size: {token_count} tokens.'})}\n\n"
+                elif token_count > 1000000:
+                    yield f"data: {json.dumps({'error': f'Repository is too large (>1M tokens) for analysis. Gemini\'s max context length is 1M tokens. Current size: {token_count} tokens.'})}\n\n"
                     return
 
                 # Prepare prompts
@@ -173,11 +246,11 @@ async def generate_stream(request: Request, body: ApiRequest):
                     )
 
                 # Phase 1: Get explanation
-                yield f"data: {json.dumps({'status': 'explanation_sent', 'message': 'Sending explanation request to o4-mini...'})}\n\n"
+                yield f"data: {json.dumps({'status': 'explanation_sent', 'message': 'Sending explanation request to Gemini...'})}\n\n"
                 await asyncio.sleep(0.1)
                 yield f"data: {json.dumps({'status': 'explanation', 'message': 'Analyzing repository structure...'})}\n\n"
                 explanation = ""
-                async for chunk in o4_service.call_o4_api_stream(
+                async for chunk in gemini_service.call_gemini_api_stream(
                     system_prompt=first_system_prompt,
                     data={
                         "file_tree": file_tree,
@@ -185,7 +258,7 @@ async def generate_stream(request: Request, body: ApiRequest):
                         "instructions": body.instructions,
                     },
                     api_key=body.api_key,
-                    reasoning_effort="medium",
+                    thinking_budget=map_reasoning_to_thinking_budget("medium"),
                 ):
                     explanation += chunk
                     yield f"data: {json.dumps({'status': 'explanation_chunk', 'chunk': chunk})}\n\n"
@@ -195,15 +268,15 @@ async def generate_stream(request: Request, body: ApiRequest):
                     return
 
                 # Phase 2: Get component mapping
-                yield f"data: {json.dumps({'status': 'mapping_sent', 'message': 'Sending component mapping request to o4-mini...'})}\n\n"
+                yield f"data: {json.dumps({'status': 'mapping_sent', 'message': 'Sending component mapping request to Gemini...'})}\n\n"
                 await asyncio.sleep(0.1)
                 yield f"data: {json.dumps({'status': 'mapping', 'message': 'Creating component mapping...'})}\n\n"
                 full_second_response = ""
-                async for chunk in o4_service.call_o4_api_stream(
+                async for chunk in gemini_service.call_gemini_api_stream(
                     system_prompt=SYSTEM_SECOND_PROMPT,
                     data={"explanation": explanation, "file_tree": file_tree},
                     api_key=body.api_key,
-                    reasoning_effort="low",
+                    thinking_budget=map_reasoning_to_thinking_budget("low"),
                 ):
                     full_second_response += chunk
                     yield f"data: {json.dumps({'status': 'mapping_chunk', 'chunk': chunk})}\n\n"
@@ -219,11 +292,11 @@ async def generate_stream(request: Request, body: ApiRequest):
                 ]
 
                 # Phase 3: Generate Mermaid diagram
-                yield f"data: {json.dumps({'status': 'diagram_sent', 'message': 'Sending diagram generation request to o4-mini...'})}\n\n"
+                yield f"data: {json.dumps({'status': 'diagram_sent', 'message': 'Sending diagram generation request to Gemini...'})}\n\n"
                 await asyncio.sleep(0.1)
                 yield f"data: {json.dumps({'status': 'diagram', 'message': 'Generating diagram...'})}\n\n"
                 mermaid_code = ""
-                async for chunk in o4_service.call_o4_api_stream(
+                async for chunk in gemini_service.call_gemini_api_stream(
                     system_prompt=third_system_prompt,
                     data={
                         "explanation": explanation,
@@ -231,7 +304,7 @@ async def generate_stream(request: Request, body: ApiRequest):
                         "instructions": body.instructions,
                     },
                     api_key=body.api_key,
-                    reasoning_effort="low",
+                    thinking_budget=map_reasoning_to_thinking_budget("low"),
                 ):
                     mermaid_code += chunk
                     yield f"data: {json.dumps({'status': 'diagram_chunk', 'chunk': chunk})}\n\n"
@@ -245,6 +318,8 @@ async def generate_stream(request: Request, body: ApiRequest):
                 processed_diagram = process_click_events(
                     mermaid_code, body.username, body.repo, default_branch
                 )
+                # Clean up any invalid class statements that reference subgraphs
+                processed_diagram = clean_invalid_class_statements(processed_diagram)
 
                 # Send final result
                 yield f"data: {json.dumps({

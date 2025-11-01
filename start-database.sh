@@ -1,60 +1,90 @@
 #!/usr/bin/env bash
-# Use this script to start a docker container for a local development database
+# Use this script to verify connectivity to your existing PostgreSQL database
 
 # TO RUN ON WINDOWS:
 # 1. Install WSL (Windows Subsystem for Linux) - https://learn.microsoft.com/en-us/windows/wsl/install
-# 2. Install Docker Desktop for Windows - https://docs.docker.com/docker-for-windows/install/
-# 3. Open WSL - `wsl`
-# 4. Run this script - `./start-database.sh`
+# 2. Open WSL - `wsl`
+# 3. Run this script - `./start-database.sh`
 
 # On Linux and macOS you can run this script directly - `./start-database.sh`
 
-DB_CONTAINER_NAME="gitdiagram-postgres"
-
-if ! [ -x "$(command -v docker)" ]; then
-  echo -e "Docker is not installed. Please install docker and try again.\nDocker install guide: https://docs.docker.com/engine/install/"
-  exit 1
-fi
-
-if ! docker info > /dev/null 2>&1; then
-  echo "Docker daemon is not running. Please start Docker and try again."
-  exit 1
-fi
-
-if [ "$(docker ps -q -f name=$DB_CONTAINER_NAME)" ]; then
-  echo "Database container '$DB_CONTAINER_NAME' already running"
-  exit 0
-fi
-
-if [ "$(docker ps -q -a -f name=$DB_CONTAINER_NAME)" ]; then
-  docker start "$DB_CONTAINER_NAME"
-  echo "Existing database container '$DB_CONTAINER_NAME' started"
-  exit 0
-fi
-
 # import env variables from .env
+if [ ! -f .env ]; then
+  echo "Error: .env file not found. Please create a .env file with your POSTGRES_URL."
+  exit 1
+fi
+
 set -a
 source .env
 
-DB_PASSWORD=$(echo "$POSTGRES_URL" | awk -F':' '{print $3}' | awk -F'@' '{print $1}')
-DB_PORT=$(echo "$POSTGRES_URL" | awk -F':' '{print $4}' | awk -F'\/' '{print $1}')
-
-if [ "$DB_PASSWORD" = "password" ]; then
-  echo "You are using the default database password"
-  read -p "Should we generate a random password for you? [y/N]: " -r REPLY
-  if ! [[ $REPLY =~ ^[Yy]$ ]]; then
-    echo "Please change the default password in the .env file and try again"
-    exit 1
-  fi
-  # Generate a random URL-safe password
-  DB_PASSWORD=$(openssl rand -base64 12 | tr '+/' '-_')
-  sed -i -e "s#:password@#:$DB_PASSWORD@#" .env
+if [ -z "$POSTGRES_URL" ]; then
+  echo "Error: POSTGRES_URL not found in .env file."
+  exit 1
 fi
 
-docker run -d \
-  --name $DB_CONTAINER_NAME \
-  -e POSTGRES_USER="postgres" \
-  -e POSTGRES_PASSWORD="$DB_PASSWORD" \
-  -e POSTGRES_DB=gitdiagram \
-  -p "$DB_PORT":5432 \
-  docker.io/postgres && echo "Database container '$DB_CONTAINER_NAME' was successfully created"
+# Parse connection details from POSTGRES_URL
+# Format: postgresql://username:password@host:port/database
+# Handle both with and without port in URL
+
+# Extract port if present
+if echo "$POSTGRES_URL" | grep -q "@.*:[0-9]\+/"; then
+  # URL has port specified: postgresql://user:pass@host:port/db
+  DB_HOST=$(echo "$POSTGRES_URL" | sed -n 's/.*@\([^:]*\):.*/\1/p')
+  DB_PORT=$(echo "$POSTGRES_URL" | sed -n 's/.*:\([0-9]*\)\/.*/\1/p')
+else
+  # URL doesn't have explicit port: postgresql://user:pass@host/db
+  DB_HOST=$(echo "$POSTGRES_URL" | sed -n 's/.*@\([^/]*\)\/.*/\1/p')
+  DB_PORT="5432"
+fi
+
+# Default to localhost if host is empty
+if [ -z "$DB_HOST" ]; then
+  DB_HOST="localhost"
+fi
+
+# Extract username (everything after :// and before : or @)
+DB_USER=$(echo "$POSTGRES_URL" | sed -n 's/.*:\/\/\([^:@]*\).*/\1/p')
+
+# Extract database name (everything after last / and before ?)
+DB_NAME=$(echo "$POSTGRES_URL" | sed -n 's/.*\/\([^?]*\).*/\1/p')
+
+echo "Checking PostgreSQL connection..."
+echo "  Host: $DB_HOST"
+echo "  Port: $DB_PORT"
+echo "  User: $DB_USER"
+echo "  Database: $DB_NAME"
+
+# Check if port is accessible
+if command -v nc > /dev/null 2>&1; then
+  if ! nc -z "$DB_HOST" "$DB_PORT" 2>/dev/null; then
+    echo "Error: Cannot connect to PostgreSQL at $DB_HOST:$DB_PORT"
+    echo "Please ensure your PostgreSQL instance is running and accessible."
+    exit 1
+  fi
+elif command -v timeout > /dev/null 2>&1; then
+  if ! timeout 2 bash -c "cat < /dev/null > /dev/tcp/$DB_HOST/$DB_PORT" 2>/dev/null; then
+    echo "Error: Cannot connect to PostgreSQL at $DB_HOST:$DB_PORT"
+    echo "Please ensure your PostgreSQL instance is running and accessible."
+    exit 1
+  fi
+else
+  echo "Warning: Could not verify port connectivity (nc or timeout not available)"
+  echo "Proceeding with assumption that PostgreSQL is running..."
+fi
+
+# Try to connect using psql if available
+if command -v psql > /dev/null 2>&1; then
+  echo "Attempting to connect to database..."
+  if PGPASSWORD=$(echo "$POSTGRES_URL" | sed -n 's/.*:\/\/[^:]*:\([^@]*\)@.*/\1/p') psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" -c "SELECT 1;" > /dev/null 2>&1; then
+    echo "✓ Successfully connected to PostgreSQL database!"
+  else
+    echo "Warning: Could not authenticate with PostgreSQL using psql."
+    echo "Port is accessible, but authentication failed. Please check your POSTGRES_URL credentials."
+  fi
+else
+  echo "✓ Port $DB_PORT is accessible on $DB_HOST"
+  echo "Note: Install psql (PostgreSQL client) for full connection verification."
+fi
+
+echo ""
+echo "PostgreSQL connection check complete. Your database should be ready to use."

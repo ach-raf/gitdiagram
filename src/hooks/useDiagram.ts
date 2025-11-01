@@ -249,21 +249,25 @@ export function useDiagram(username: string, repo: string) {
     }
   }, [state.status, state.diagram, username, repo, state.explanation]);
 
-  const getDiagram = useCallback(async () => {
+  const getDiagram = useCallback(async (forceRegenerate = false) => {
     setLoading(true);
     setError("");
     setCost("");
 
     try {
-      // Check cache first - always allow access to cached diagrams
-      const cached = await getCachedDiagram(username, repo);
       const github_pat = localStorage.getItem("github_pat");
 
-      if (cached) {
-        setDiagram(cached);
-        const date = await getLastGeneratedDate(username, repo);
-        setLastGenerated(date ?? undefined);
-        return;
+      // Check cache first - always allow access to cached diagrams
+      // Skip cache check if forceRegenerate is true
+      if (!forceRegenerate) {
+        const cached = await getCachedDiagram(username, repo);
+
+        if (cached) {
+          setDiagram(cached);
+          const date = await getLastGeneratedDate(username, repo);
+          setLastGenerated(date ?? undefined);
+          return;
+        }
       }
 
       // TEMP: LET USERS HAVE INFINITE GENERATIONS
@@ -305,6 +309,40 @@ export function useDiagram(username: string, repo: string) {
     } catch (error) {
       console.error("Error in getDiagram:", error);
       setError("Something went wrong. Please try again later.");
+    } finally {
+      setLoading(false);
+    }
+  }, [username, repo, generateDiagram]);
+
+  const handleForceRegenerate = useCallback(async () => {
+    setLoading(true);
+    setError("");
+    setCost("");
+
+    try {
+      const github_pat = localStorage.getItem("github_pat");
+
+      // Get cost estimate
+      const costEstimate = await getCostOfGeneration(
+        username,
+        repo,
+        "",
+        github_pat ?? undefined,
+      );
+
+      if (costEstimate.error) {
+        console.error("Cost estimation failed:", costEstimate.error);
+        setError(costEstimate.error);
+        return;
+      }
+
+      setCost(costEstimate.cost ?? "");
+
+      // Start streaming generation, bypassing cache
+      await generateDiagram("", github_pat ?? undefined);
+    } catch (error) {
+      console.error("Error in force regenerate:", error);
+      setError("Failed to regenerate diagram. Please try again later.");
     } finally {
       setLoading(false);
     }
@@ -474,6 +512,7 @@ export function useDiagram(username: string, repo: string) {
     cost,
     handleModify,
     handleRegenerate,
+    handleForceRegenerate,
     handleCopy,
     showApiKeyDialog,
     // tokenCount,

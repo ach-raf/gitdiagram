@@ -26,6 +26,7 @@ export default function Repo() {
     showApiKeyDialog,
     handleModify,
     handleRegenerate,
+    handleForceRegenerate,
     handleCopy,
     handleApiKeySubmit,
     handleCloseApiKeyDialog,
@@ -44,6 +45,7 @@ export default function Repo() {
           showCustomization={!loading && !error}
           onModify={handleModify}
           onRegenerate={handleRegenerate}
+          onForceRegenerate={handleForceRegenerate}
           onCopy={handleCopy}
           lastGenerated={lastGenerated}
           onExportImage={handleExportImage}
